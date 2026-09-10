@@ -4,6 +4,10 @@
 
 [English README](./README.en.md)
 
+本 Fork 的 `codex/speaker-early-stop` 分支新增了可选的 **VAD + 声纹三档处理 + 连续拒绝结束通知**，默认关闭。
+需要配套自定义 HA 集成；已通过模拟测试，尚未实机验证。
+参数、协议和验证边界见 [EARLY_STOP.md](./EARLY_STOP.md)。下面原门控流程及已知问题描述适用于未启用新模式的情况。
+
 ## 核心特性
 
 - 仅支持 Qwen3-ASR（`0.6B` / `1.7B`）
@@ -33,7 +37,7 @@
 ## 快速开始（Python）
 
 ```bash
-git clone https://github.com/xiasi0/wyoming-sherpa-onnx.git
+git clone --branch codex/speaker-early-stop https://github.com/cuichaobaobao/wyoming-sherpa-onnx.git
 cd wyoming-sherpa-onnx
 python3 -m venv .venv
 source .venv/bin/activate
@@ -52,7 +56,7 @@ python run_server.py --hotwords "儿童房,台灯"
 ## 快速开始（Docker）
 
 ```bash
-git clone https://github.com/xiasi0/wyoming-sherpa-onnx.git
+git clone --branch codex/speaker-early-stop https://github.com/cuichaobaobao/wyoming-sherpa-onnx.git
 cd wyoming-sherpa-onnx
 docker compose up -d --build
 docker compose logs -f

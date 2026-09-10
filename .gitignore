@@ -20,3 +20,8 @@ build/
 .env.*
 data/
 *.wav
+
+# Local data and macOS metadata
+.DS_Store
+models/
+speaker_refs/

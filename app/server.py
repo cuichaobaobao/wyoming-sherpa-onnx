@@ -11,6 +11,7 @@ import numpy as np
 from .asr_engine import AudioFormat, Qwen3AsrEngine
 from .config import AppConfig
 from .denoise import GtcrnEnhancer
+from .early_stop import SpeakerEndpoint, StreamingVad
 from .protocol import read_message, write_message
 from .speaker_gate import SpeakerGate
 
@@ -40,6 +41,10 @@ class SessionState:
     gate_pending_start_idx: int
     gate_segments: list["GateSegment"]
     gate_active: bool
+    endpoint: SpeakerEndpoint | None = None
+    denoiser: GtcrnEnhancer | None = None
+    finished: bool = False
+    stop_notified: bool = False
 
 
 @dataclass(slots=True)
@@ -56,6 +61,7 @@ class GateSegment:
 class WyomingAsrServer:
     def __init__(self, cfg: AppConfig) -> None:
         self.cfg = cfg
+        cfg.validate_early_stop()
         self.engine = Qwen3AsrEngine(
             model_dir=cfg.model_dir,
             sample_rate=cfg.sample_rate,
@@ -71,12 +77,8 @@ class WyomingAsrServer:
                 num_threads=max(1, cfg.num_threads),
                 reference_root=cfg.speaker_reference_dir,
             )
-        self.denoiser: GtcrnEnhancer | None = None
-        if cfg.denoise_enabled:
-            self.denoiser = GtcrnEnhancer(
-                model_path=cfg.denoise_model_dir / cfg.denoise_model_file,
-                num_threads=max(1, cfg.num_threads),
-            )
+        # Shared speaker extractor/recognizer calls are serialized off-loop.
+        self._model_lock = asyncio.Lock()
         self._info_cache: dict[str, Any] | None = None
         self._server: asyncio.AbstractServer | None = None
 
@@ -134,8 +136,25 @@ class WyomingAsrServer:
                     state.gate_pending_start_idx = 0
                     state.gate_segments = []
                     state.gate_active = False
-                    if self.denoiser is not None:
-                        self.denoiser.reset()
+                    state.finished = False
+                    state.stop_notified = False
+                    state.endpoint = None
+                    # GTCRN carries stream state, so never share it across clients.
+                    state.denoiser = None
+                    if self.cfg.denoise_enabled:
+                        state.denoiser = await self._model_call(
+                            lambda: GtcrnEnhancer(
+                                model_path=self.cfg.denoise_model_dir / self.cfg.denoise_model_file,
+                                num_threads=max(1, self.cfg.num_threads),
+                            )
+                        )
+                    if (self.cfg.speaker_early_stop and
+                            state.transcribe_opts.get("speaker_early_stop") is True):
+                        vad = await self._model_call(lambda: StreamingVad(self.cfg))
+                        state.endpoint = SpeakerEndpoint(
+                            self.cfg, self.speaker_gate, vad,
+                            lambda waveform: self._feed_selected(state, waveform),
+                        )
                     LOGGER.debug(
                         "[%s] Audio stream started: %dHz, %d-bit, %d channels",
                         peer,
@@ -144,7 +163,8 @@ class WyomingAsrServer:
                         state.audio_format.channels,
                     )
                 elif msg.msg_type == "audio-chunk":
-                    if msg.payload and state.stream is not None and state.audio_format is not None:
+                    if (msg.payload and not state.finished and state.stream is not None
+                            and state.audio_format is not None):
                         bytes_per_sample = state.audio_format.width * state.audio_format.channels
                         total_bytes = state.total_bytes + len(msg.payload)
                         audio_duration = total_bytes / (bytes_per_sample * state.audio_format.rate)
@@ -157,13 +177,19 @@ class WyomingAsrServer:
                                 _MAX_AUDIO_SECONDS,
                                 audio_duration,
                             )
+                            if state.endpoint is not None:
+                                await self._notify_stop(writer, state, "audio-limit")
+                                await self._finish_session(peer, writer, state)
                             continue
                         waveform = self.engine.pcm_chunk_to_model_waveform(
                             msg.payload, state.audio_format
                         )
-                        if self.denoiser is not None:
-                            waveform = self.denoiser.enhance(waveform, self.cfg.sample_rate)
-                        self._process_segments(peer, state, [waveform])
+                        if state.endpoint is not None:
+                            # VAD and voiceprint see unmodified samples; optional
+                            # denoising runs only on accepted audio for ASR.
+                            await self._model_call(lambda: state.endpoint.accept(waveform))
+                        else:
+                            await self._model_call(lambda: self._process_legacy(peer, state, waveform))
                         state.chunk_count += 1
                         state.total_bytes += len(msg.payload)
                         LOGGER.debug(
@@ -172,72 +198,11 @@ class WyomingAsrServer:
                             state.chunk_count,
                             len(msg.payload) / 1024,
                         )
+                        if state.endpoint is not None and state.endpoint.stopped:
+                            await self._notify_stop(writer, state, "speaker-rejected")
+                            await self._finish_session(peer, writer, state)
                 elif msg.msg_type == "audio-stop":
-                    text = ""
-                    if state.over_limit:
-                        LOGGER.warning(
-                            "[%s] Returning empty transcript because audio exceeded %.2fs limit",
-                            peer,
-                            _MAX_AUDIO_SECONDS,
-                        )
-                    elif state.stream is not None:
-                        audio_duration = 0.0
-                        if state.audio_format and state.total_bytes > 0:
-                            bytes_per_sample = state.audio_format.width * state.audio_format.channels
-                            audio_duration = state.total_bytes / (bytes_per_sample * state.audio_format.rate)
-
-                        if self.denoiser is not None:
-                            tail = self.denoiser.flush()
-                            if tail.size > 0:
-                                self._process_segments(peer, state, [tail])
-                        self._flush_pending_speaker_gate(peer, state, force=True)
-
-                        start_time = time.time()
-                        text = self.engine.finish_stream(state.stream)
-                        infer_time = time.time() - start_time
-                        rtf = infer_time / audio_duration if audio_duration > 0 else 0.0
-
-                        state.stream = None
-
-                        LOGGER.info(
-                            "[%s] Recognition completed: audio=%.2fs, inference=%.3fs, RTF=%.2f, "
-                            "segments=%d, speaker_accept=%d, speaker_reject=%d, asr_fed=%.2fs, result=\"%s\"",
-                            peer,
-                            audio_duration,
-                            infer_time,
-                            rtf,
-                            state.detected_segments,
-                            state.accepted_segments,
-                            state.rejected_segments,
-                            state.accepted_samples / float(self.cfg.sample_rate),
-                            text if text else "(silence)",
-                        )
-                        if state.accepted_segments == 0 and state.rejected_segments > 0:
-                            LOGGER.info(
-                                "[%s] Empty transcript because all detected speech segments "
-                                "were rejected by speaker gate.",
-                                peer,
-                            )
-                        elif state.accepted_segments == 0:
-                            LOGGER.info(
-                                "[%s] Empty transcript because no audio segments passed to ASR.",
-                                peer,
-                            )
-
-                    await write_message(
-                        writer,
-                        "transcript",
-                        {
-                            "text": text,
-                            "language": state.transcribe_opts.get("language", "zh"),
-                        },
-                    )
-                    LOGGER.debug("[%s] Sent transcript: %r", peer, text)
-                    state.over_limit = False
-                    state.gate_pending_waveform = np.empty((0,), dtype=np.float32)
-                    state.gate_pending_start_idx = 0
-                    state.gate_segments = []
-                    state.gate_active = False
+                    await self._finish_session(peer, writer, state)
                 else:
                     LOGGER.debug("Ignoring unsupported message type: %s", msg.msg_type)
         except EOFError:
@@ -260,6 +225,82 @@ class WyomingAsrServer:
             except Exception as exc:  # noqa: BLE001
                 if not _is_disconnect_error(exc):
                     LOGGER.debug("Error while closing client stream %s: %s", peer, exc)
+
+    async def _model_call(self, function):
+        async with self._model_lock:
+            task = asyncio.create_task(asyncio.to_thread(function))
+            try:
+                return await asyncio.shield(task)
+            except asyncio.CancelledError:
+                # A native inference call cannot be cancelled. Drain it before
+                # releasing the shared model lock or discarding session state.
+                while not task.done():
+                    try:
+                        await asyncio.shield(task)
+                    except asyncio.CancelledError:
+                        continue
+                    except Exception:
+                        break
+                if not task.cancelled():
+                    task.exception()  # Retrieve any worker error during cancellation.
+                raise
+
+    def _process_legacy(self, peer, state, waveform):
+        if state.denoiser is not None:
+            waveform = state.denoiser.enhance(waveform, self.cfg.sample_rate)
+        self._process_segments(peer, state, [waveform])
+
+    def _feed_selected(self, state, waveform):
+        state.accepted_segments += 1
+        state.accepted_samples += waveform.size
+        if state.denoiser is not None:
+            waveform = state.denoiser.enhance(waveform, self.cfg.sample_rate)
+        self.engine.feed_waveform_to_stream(state.stream, waveform)
+
+    async def _notify_stop(self, writer, state, reason):
+        if state.stop_notified:
+            return
+        state.stop_notified = True
+        fmt = state.audio_format
+        timestamp = 0 if fmt is None else round(
+            1000 * state.total_bytes / (fmt.rate * fmt.width * fmt.channels)
+        )
+        await write_message(writer, "voice-stopped", {"timestamp": timestamp, "reason": reason})
+        LOGGER.info("Early input stop: reason=%s timestamp=%dms", reason, timestamp)
+
+    def _finish_audio(self, peer, state):
+        if state.endpoint is not None:
+            state.endpoint.finish()
+            if state.denoiser is not None and state.accepted_samples > 0:
+                self.engine.feed_waveform_to_stream(state.stream, state.denoiser.flush())
+        else:
+            if state.denoiser is not None:
+                self._process_segments(peer, state, [state.denoiser.flush()])
+            self._flush_pending_speaker_gate(peer, state, force=True)
+
+    async def _finish_session(self, peer, writer, state):
+        if state.finished:
+            return  # Includes duplicate/late audio-stop and in-flight chunks.
+        state.finished = True
+        text = ""
+        start_time = time.monotonic()
+        if not state.over_limit and state.stream is not None:
+            await self._model_call(lambda: self._finish_audio(peer, state))
+            # Endpoint can also be reached while flushing a final partial window.
+            if state.endpoint is not None and state.endpoint.stopped:
+                await self._notify_stop(writer, state, "speaker-rejected")
+            text = await self._model_call(lambda: self.engine.finish_stream(state.stream))
+        state.stream = None
+        state.denoiser = None
+        state.endpoint = None
+        state.gate_pending_waveform = np.empty(0, dtype=np.float32)
+        state.gate_segments = []
+        await write_message(writer, "transcript", {
+            "text": text, "language": state.transcribe_opts.get("language", "zh"),
+        })
+        LOGGER.info("[%s] Recognition completed: finish=%.3fs accepted=%.2fs text=%r",
+                    peer, time.monotonic() - start_time,
+                    state.accepted_samples / self.cfg.sample_rate, text)
 
     def _get_peername(self, writer) -> str:
         """获取客户端地址，安全处理异常。"""

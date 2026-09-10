@@ -145,3 +145,23 @@ class SpeakerGate:
                 best_speaker = speaker_id
         use_threshold = self.threshold if threshold is None else float(threshold)
         return best_similarity >= use_threshold, best_similarity, best_speaker
+
+    def score_waveform(
+        self, waveform: np.ndarray, sample_rate: int, speaker_id: str | None = None
+    ) -> tuple[float | None, str | None]:
+        """Score only the session speaker once locked; invalid audio is unknown."""
+        if waveform.size == 0:
+            return None, None
+        embedding = self._compute_embedding(waveform, sample_rate)
+        if not np.all(np.isfinite(embedding)) or np.linalg.norm(embedding) <= 1e-12:
+            return None, None
+        best_score, best_id = -float("inf"), None
+        for candidate, reference in self.speaker_embeddings.items():
+            if speaker_id is not None and candidate != speaker_id:
+                continue
+            if not np.all(np.isfinite(reference)) or np.linalg.norm(reference) <= 1e-12:
+                continue
+            score = _cosine_similarity(embedding, reference)
+            if score > best_score:
+                best_score, best_id = score, candidate
+        return (best_score, best_id) if best_id is not None else (None, None)

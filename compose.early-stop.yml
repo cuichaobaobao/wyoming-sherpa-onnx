@@ -1,0 +1,14 @@
+# Use together with docker-compose.yml. Requires VAD model and enrollment WAVs.
+services:
+  wyoming-sherpa-onnx:
+    environment:
+      SPEAKER_GATE: "true"
+      SPEAKER_EARLY_STOP: "true"
+      SPEAKER_THRESHOLD: "0.40"
+      SPEAKER_LOW_THRESHOLD: "0.30"
+      SPEAKER_WINDOW_SECONDS: "0.8"
+      SPEAKER_REJECT_SECONDS: "1.6"
+      VAD_MODEL: /app/data/models/vad/silero_vad.onnx
+      VAD_THRESHOLD: "0.5"
+      SAMPLE_RATE: "16000"
+      AUTO_DOWNLOAD: "true"

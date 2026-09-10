@@ -1,3 +1,5 @@
+> This fork adds optional speaker-triggered early stop on branch `codex/speaker-early-stop`. See [EARLY_STOP.md](EARLY_STOP.md). The companion HA integration is distributed separately; actual device behavior has not been verified. The original documentation follows.
+
 # Wyoming Qwen3-ASR Server
 
 Offline ASR server based on the Wyoming protocol, currently focused on Qwen3-ASR, with fixed-window speaker gating and GTCRN denoise.

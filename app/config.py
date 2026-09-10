@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -110,6 +111,30 @@ class AppConfig:
     denoise_model_dir: Path
     denoise_model_file: str
     denoise_model_url: str
+    speaker_early_stop: bool = False
+    speaker_low_threshold: float = 0.30
+    speaker_window_seconds: float = 0.8
+    speaker_reject_seconds: float = 1.6
+    vad_model: Path | None = None
+    vad_threshold: float = 0.5
+
+    def validate_early_stop(self) -> None:
+        if not self.speaker_early_stop:
+            return
+        if not self.speaker_gate:
+            raise ValueError("speaker-early-stop requires speaker-gate")
+        if self.sample_rate != 16000:
+            raise ValueError("speaker-early-stop requires sample-rate 16000")
+        if not (-1 <= self.speaker_low_threshold < self.speaker_threshold <= 1):
+            raise ValueError("Require -1 <= speaker-low-threshold < speaker-threshold <= 1")
+        if not (0 < self.vad_threshold < 1):
+            raise ValueError("vad-threshold must be between 0 and 1")
+        if not (math.isfinite(self.speaker_window_seconds) and 0.4 <= self.speaker_window_seconds <= 3):
+            raise ValueError("speaker-window-seconds must be between 0.4 and 3")
+        if not (math.isfinite(self.speaker_reject_seconds) and 0 < self.speaker_reject_seconds <= 30):
+            raise ValueError("speaker-reject-seconds must be between 0 and 30")
+        if self.vad_model is None or not self.vad_model.is_file():
+            raise ValueError("Provide an existing Silero VAD ONNX file with --vad-model; it is not auto-downloaded")
 
 
 def parse_args() -> AppConfig:
@@ -252,6 +277,19 @@ def parse_args() -> AppConfig:
         action="store_true",
         help="Disable GTCRN denoise frontend.",
     )
+    parser.add_argument("--speaker-early-stop", action="store_true",
+                        default=_env_bool("SPEAKER_EARLY_STOP", False),
+                        help="Enable negotiated VAD/speaker early stop (custom HA integration required).")
+    parser.add_argument("--speaker-low-threshold", type=float,
+                        default=float(_env_str("SPEAKER_LOW_THRESHOLD", "0.30")))
+    parser.add_argument("--speaker-window-seconds", type=float,
+                        default=float(_env_str("SPEAKER_WINDOW_SECONDS", "0.8")))
+    parser.add_argument("--speaker-reject-seconds", type=float,
+                        default=float(_env_str("SPEAKER_REJECT_SECONDS", "1.6")))
+    parser.add_argument("--vad-model", type=Path,
+                        default=Path(_env_str("VAD_MODEL", str(_default_models_root() / "vad" / "silero_vad.onnx"))))
+    parser.add_argument("--vad-threshold", type=float,
+                        default=float(_env_str("VAD_THRESHOLD", "0.5")))
     args = parser.parse_args()
 
     # --no-zeroconf 覆盖 --zeroconf
@@ -342,7 +380,7 @@ def parse_args() -> AppConfig:
     if not denoise_model_url:
         denoise_model_url = f"{_DENOISE_MODEL_BASE_URL}/{denoise_model_file}"
 
-    return AppConfig(
+    cfg = AppConfig(
         host=args.host,
         port=args.port,
         service_name=args.service_name,
@@ -365,4 +403,15 @@ def parse_args() -> AppConfig:
         denoise_model_dir=denoise_model_dir,
         denoise_model_file=denoise_model_file,
         denoise_model_url=denoise_model_url,
+        speaker_early_stop=args.speaker_early_stop,
+        speaker_low_threshold=args.speaker_low_threshold,
+        speaker_window_seconds=args.speaker_window_seconds,
+        speaker_reject_seconds=args.speaker_reject_seconds,
+        vad_model=args.vad_model.expanduser().resolve(),
+        vad_threshold=args.vad_threshold,
     )
+    try:
+        cfg.validate_early_stop()
+    except ValueError as err:
+        parser.error(str(err))
+    return cfg
