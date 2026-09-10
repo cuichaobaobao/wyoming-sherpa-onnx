@@ -13,7 +13,7 @@ LOGGER = logging.getLogger("wyoming-sherpa-onnx")
 class StreamingVad:
     """Read active VAD segments incrementally, without waiting for silence.
 
-    sherpa-onnx 1.13.3 exposes current_segment in its Python bindings. Using
+    sherpa-onnx 1.13.7 exposes current_segment in its Python bindings. Using
     only front/empty would wait for speech to end and defeat speaker early stop.
     Each sample is emitted once; None marks a completed speech region.
     """

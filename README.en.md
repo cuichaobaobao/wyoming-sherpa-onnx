@@ -7,6 +7,7 @@ Offline ASR server based on the Wyoming protocol, currently focused on Qwen3-ASR
 ## Highlights
 
 - Qwen3-ASR only (`0.6B` / `1.7B`)
+- Uses sherpa-onnx 1.13.7 with the Qwen3-ASR feature-alignment and degenerate-decoding fixes
 - Speaker gate disabled by default (multi-speaker directory enrollment, enable when needed)
 - GTCRN denoise enabled by default
 - Auto-download for missing models (ASR from ModelScope, speaker/denoise from sherpa-onnx releases)

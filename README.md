@@ -11,6 +11,7 @@
 ## 核心特性
 
 - 仅支持 Qwen3-ASR（`0.6B` / `1.7B`）
+- 使用 sherpa-onnx 1.13.7，包含 Qwen3-ASR 音频特征对齐及异常重复解码修复
 - 默认关闭声纹门控（多说话人目录注册，可按需开启）
 - 默认开启 GTCRN 降噪
 - 自动下载缺失模型（ASR 来自 ModelScope，声纹/降噪来自 sherpa-onnx release）

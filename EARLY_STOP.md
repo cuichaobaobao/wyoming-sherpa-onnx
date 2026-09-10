@@ -8,7 +8,7 @@
 
 `未增强音频 → Silero VAD 标记人声 → 短窗口声纹评分 → 选择有效音频 → 可选 GTCRN → Qwen3-ASR`
 
-- VAD 使用项目已有 sherpa-onnx 1.13.3 的 `VoiceActivityDetector`，按 512 点读取。
+- VAD 使用 sherpa-onnx 1.13.7 的 `VoiceActivityDetector`，按 512 点读取。
   通过 `current_segment` 增量读取尚未结束的人声，不等完整静音后再评分。
   模型有 0.25 秒起声确认、0.2 秒静音确认；VAD 区域可能含边缘静音。
 - 默认每 0.8 秒 VAD 人声做一次声纹评分。首次高分锁定本轮注册说话人，之后
@@ -87,7 +87,7 @@ PYTHONPATH=. python3 -B -m unittest discover -s tests -p 'test_*.py' -v
 
 ## 源码依据
 
-- [sherpa-onnx 1.13.3 VAD Python API](https://github.com/k2-fsa/sherpa-onnx/blob/v1.13.3/sherpa-onnx/python/csrc/voice-activity-detector.cc)
+- [sherpa-onnx 1.13.7 VAD Python API](https://github.com/k2-fsa/sherpa-onnx/blob/v1.13.7/sherpa-onnx/python/csrc/voice-activity-detector.cc)
 - [HA 2026.9.0 Cloud 音频偏好](https://github.com/home-assistant/core/blob/2026.9.0/homeassistant/components/cloud/stt.py#L42)
 - [HA ESPHome 事件转发](https://github.com/home-assistant/core/blob/2026.9.0/homeassistant/components/esphome/assist_satellite.py#L343)
 - [ESPHome 2026.8.0 收到结束事件](https://github.com/esphome/esphome/blob/2026.8.0/esphome/components/voice_assistant/voice_assistant.cpp#L979)
