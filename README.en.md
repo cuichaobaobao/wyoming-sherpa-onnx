@@ -1,4 +1,4 @@
-> This fork adds optional speaker-triggered early stop on branch `speaker-early-stop`. See [EARLY_STOP.md](EARLY_STOP.md). The companion HA integration is distributed separately; actual device behavior has not been verified. The original documentation follows.
+> This fork adds optional speaker-triggered early stop on branch `main`. See [EARLY_STOP.md](EARLY_STOP.md). The companion HA integration is distributed separately; actual device behavior has not been verified. The original documentation follows.
 
 # Wyoming Qwen3-ASR Server
 

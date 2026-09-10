@@ -1,6 +1,6 @@
 # Ubuntu Docker + HA 部署（待实机验证）
 
-使用本 Fork 的 `speaker-early-stop` 分支。上游原版不包含本次改动；HA 自定义集成另行分发。
+使用本 Fork 的 `main` 分支。上游原版不包含本次改动；HA 自定义集成另行分发。
 当前 Docker/代码未启用 CUDA，ASR 使用默认 CPU，声纹/降噪显式使用 CPU。
 RTX 3060 不会被此配置自动使用；没有加入 GPU 依赖或 NVIDIA 容器配置。
 
@@ -9,7 +9,7 @@ RTX 3060 不会被此配置自动使用；没有加入 GPU 依赖或 NVIDIA 容�
 在你的业务目录下执行（例如先进入 `/data`，确保不存在同名项目目录）：
 
 ```sh
-git clone --branch speaker-early-stop https://github.com/cuichaobaobao/wyoming-sherpa-onnx.git
+git clone https://github.com/cuichaobaobao/wyoming-sherpa-onnx.git
 cd wyoming-sherpa-onnx
 docker compose version
 ```
