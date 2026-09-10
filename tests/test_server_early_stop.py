@@ -220,6 +220,47 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.gather(task, return_exceptions=True)
             bridge.uninstall()
 
+    async def test_debug_audio_matches_received_and_actual_asr_pcm(self):
+        import tempfile
+        import wave
+        import json
+        from app.asr_engine import Qwen3AsrEngine, Qwen3AsrStream
+        self.server.engine.create_stream = Qwen3AsrStream
+        self.server.engine.feed_waveform_to_stream = lambda stream, samples: Qwen3AsrEngine.feed_waveform_to_stream(None, stream, samples)
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"DEBUG_AUDIO_DIR": directory}):
+            client = self.connect()
+            await self.start(client)
+            raw = pcm(1000) + pcm(-1000, 25600)
+            await self.send(client, raw)
+            self.assertEqual((await self.read(client))["type"], "voice-stopped")
+            self.assertEqual((await self.read(client))["type"], "transcript")
+            with wave.open(str(next(Path(directory).glob("*-received.wav"))), "rb") as wav:
+                self.assertEqual(wav.getparams()[:3], (1, 2, 16000))
+                self.assertEqual(wav.readframes(wav.getnframes()), raw)
+            with wave.open(str(next(Path(directory).glob("*-asr-input.wav"))), "rb") as wav:
+                self.assertEqual(wav.readframes(wav.getnframes()), pcm(999))
+            metadata = json.loads(next(Path(directory).glob("*.json")).read_text())
+            self.assertEqual(metadata["reason"], "speaker-rejected")
+            self.assertEqual(metadata["asr_input_seconds"], 0.8)
+            await client.write_event({"type": "audio-stop"})
+            await client.write_event({"type": "describe"})
+            await self.read(client)
+            self.assertEqual(len(list(Path(directory).glob("*.wav"))), 2)
+
+    async def test_context_mode_negotiates_and_emits_one_early_stop(self):
+        self.server.cfg = replace(self.server.cfg, speaker_context_seconds=2.0,
+            speaker_window_seconds=0.4, speaker_threshold=0.63,
+            speaker_low_threshold=0.60, speaker_boundary_refine=True)
+        client = self.connect()
+        await self.start(client)
+        await self.send(client, pcm(-1000, 38400))
+        self.assertEqual((await self.read(client))["data"]["reason"], "speaker-rejected")
+        self.assertEqual((await self.read(client))["data"]["text"], "")
+        await client_stop(client)
+        await client.write_event({"type": "describe"})
+        self.assertEqual((await self.read(client))["type"], "info")
+        self.assertEqual(self.server.engine.decode_count, 1)
+
     async def test_late_chunks_and_duplicate_stops_do_not_decode_or_reply_twice(self):
         client = self.connect()
         await self.start(client)

@@ -117,6 +117,9 @@ class AppConfig:
     speaker_reject_seconds: float = 1.6
     vad_model: Path | None = None
     vad_threshold: float = 0.5
+    speaker_context_seconds: float = 0.0
+    speaker_short_threshold: float = 0.40
+    speaker_boundary_refine: bool = False
 
     def validate_early_stop(self) -> None:
         if not self.speaker_early_stop:
@@ -133,6 +136,12 @@ class AppConfig:
             raise ValueError("speaker-window-seconds must be between 0.4 and 3")
         if not (math.isfinite(self.speaker_reject_seconds) and 0 < self.speaker_reject_seconds <= 30):
             raise ValueError("speaker-reject-seconds must be between 0 and 30")
+        if not (math.isfinite(self.speaker_context_seconds) and
+                (self.speaker_context_seconds == 0 or
+                 max(0.8, self.speaker_window_seconds) <= self.speaker_context_seconds <= 3)):
+            raise ValueError("speaker-context-seconds must be 0 (fixed mode), or >= window and between 0.8 and 3")
+        if not (-1 <= self.speaker_short_threshold <= 1):
+            raise ValueError("speaker-short-threshold must be finite and between -1 and 1")
         if self.vad_model is None or not self.vad_model.is_file():
             raise ValueError("Provide an existing Silero VAD ONNX file with --vad-model; it is not auto-downloaded")
 
@@ -290,6 +299,12 @@ def parse_args() -> AppConfig:
                         default=Path(_env_str("VAD_MODEL", str(_default_models_root() / "vad" / "silero_vad.onnx"))))
     parser.add_argument("--vad-threshold", type=float,
                         default=float(_env_str("VAD_THRESHOLD", "0.5")))
+    parser.add_argument("--speaker-context-seconds", type=float,
+                        default=float(_env_str("SPEAKER_CONTEXT_SECONDS", "0")))
+    parser.add_argument("--speaker-short-threshold", type=float,
+                        default=float(_env_str("SPEAKER_SHORT_THRESHOLD", "0.40")))
+    parser.add_argument("--speaker-boundary-refine", action="store_true",
+                        default=_env_bool("SPEAKER_BOUNDARY_REFINE", False))
     args = parser.parse_args()
 
     # --no-zeroconf 覆盖 --zeroconf
@@ -409,6 +424,9 @@ def parse_args() -> AppConfig:
         speaker_reject_seconds=args.speaker_reject_seconds,
         vad_model=args.vad_model.expanduser().resolve(),
         vad_threshold=args.vad_threshold,
+        speaker_context_seconds=args.speaker_context_seconds,
+        speaker_short_threshold=args.speaker_short_threshold,
+        speaker_boundary_refine=args.speaker_boundary_refine,
     )
     try:
         cfg.validate_early_stop()

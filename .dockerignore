@@ -38,3 +38,6 @@ data/models/
 .DS_Store
 models/
 speaker_refs/
+
+# Keep recordings and all runtime data out of build context
+data/

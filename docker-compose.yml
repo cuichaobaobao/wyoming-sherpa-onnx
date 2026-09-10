@@ -6,23 +6,43 @@ services:
     image: wyoming-sherpa-onnx:latest
     container_name: wyoming-sherpa-onnx
     restart: unless-stopped
-    user: "0:0"
+    user: 0:0
     ports:
-      - "10300:10300"
+    - 192.168.50.20:10300:10300
     volumes:
-      - ${HOME}/data/models:/app/data/models:rw
-      - ${HOME}/data/speaker_refs:/data/speaker_refs:rw
+    - ./data/models:/app/data/models:rw
+    - ./data/speaker_refs:/data/speaker_refs:rw
+    - ./data/debug_audio:/data/debug_audio:rw
     environment:
-      - HOST=0.0.0.0
-      - PORT=10300
-      - MODEL_NAME=sherpa-onnx-qwen3-asr-0.6B-int8
-      - NUM_THREADS=2
-      - HOTWORDS=
-      - SPEAKER_GATE=false
-      - SPEAKER_THRESHOLD=0.40
-      - SPEAKER_MODEL_NAME=wespeaker-zh-cnceleb-resnet34
-      - SPEAKER_REFERENCE_DIR=/data/speaker_refs
-      - DENOISE=true
-      - DENOISE_MODEL_NAME=gtcrn-simple
+      HOST: 0.0.0.0
+      PORT: '10300'
+      MODEL_NAME: sherpa-onnx-qwen3-asr-1.7B-int8
+      NUM_THREADS: '2'
+      HOTWORDS: ''
+      SPEAKER_GATE: 'true'
+      SPEAKER_THRESHOLD: '0.45'
+      SPEAKER_MODEL_NAME: 3dspeaker-eres2netv2-zh
+      SPEAKER_REFERENCE_DIR: /data/speaker_refs
+      DENOISE: 'false'
+      DENOISE_MODEL_NAME: gtcrn-simple
+      SPEAKER_EARLY_STOP: 'true'
+      DEBUG_AUDIO_DIR: /data/debug_audio
+      SPEAKER_MODEL_FILE: 3dspeaker_speech_eres2netv2_sv_zh-cn_16k-common.onnx
+      SPEAKER_LOW_THRESHOLD: '0.40'
+      SPEAKER_CONTEXT_SECONDS: '2.0'
+      SPEAKER_BOUNDARY_REFINE: 'true'
+      SPEAKER_SHORT_THRESHOLD: '0.40'
+      SPEAKER_WINDOW_SECONDS: '0.4'
+      SPEAKER_REJECT_SECONDS: '1.6'
+      VAD_MODEL: /app/data/models/vad/silero_vad.onnx
+      VAD_THRESHOLD: '0.5'
     labels:
-      - "com.wyoming.asr=true"
+    - com.wyoming.asr=true
+    cpus: 4.0
+    mem_limit: 10g
+    memswap_limit: 10g
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'

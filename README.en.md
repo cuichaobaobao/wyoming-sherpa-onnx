@@ -57,8 +57,11 @@ docker compose logs -f
 ```
 
 Default mounts:
-- `${HOME}/data/models -> /app/data/models`
-- `${HOME}/data/speaker_refs -> /data/speaker_refs`
+- `./data/models -> /app/data/models`
+- `./data/speaker_refs -> /data/speaker_refs`
+- `./data/debug_audio -> /data/debug_audio`
+
+The Compose file includes local settings: `192.168.50.20:10300`, Qwen3-ASR 1.7B int8, ERes2NetV2 and speaker early stop. Check the host IP and model files before moving to another host. See [deployment instructions](DEPLOY_UBUNTU.md). Application defaults differ from this deployment configuration.
 
 ## Model and Directory Rules
 

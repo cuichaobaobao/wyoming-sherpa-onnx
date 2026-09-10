@@ -63,8 +63,11 @@ docker compose logs -f
 ```
 
 默认挂载：
-- `${HOME}/data/models -> /app/data/models`
-- `${HOME}/data/speaker_refs -> /data/speaker_refs`
+- `./data/models -> /app/data/models`
+- `./data/speaker_refs -> /data/speaker_refs`
+- `./data/debug_audio -> /data/debug_audio`
+
+当前 Compose 已包含本机参数：绑定 `192.168.50.20:10300`，使用 Qwen3-ASR 1.7B int8、ERes2NetV2 和声纹提前停止。迁移主机时核对 IP 与模型文件；准备步骤见 [部署说明](DEPLOY_UBUNTU.md)。代码默认值与这份部署配置不同。
 
 ## 模型与目录规则
 
@@ -170,3 +173,13 @@ ASR / 声纹 / 降噪三类模型采用统一逻辑：
 - ModelScope Qwen3-ASR ONNX: https://www.modelscope.cn/models/zengshuishui/Qwen3-ASR-onnx/files
 - WeSpeaker: https://github.com/wenet-e2e/wespeaker
 - 3D-Speaker: https://github.com/modelscope/3D-Speaker
+
+### 可选诊断录音
+
+设置环境变量 `DEBUG_AUDIO_DIR` 为容器内可写目录可启用，未设置或留空默认关闭。将该目录绑定到宿主机项目的 `data/debug_audio/`，排查结束后清空此环境变量并重建容器即可停止新增录音。
+
+每轮使用同一 UTC 时间戳和随机标识保存 `*-received.wav`（接收到的 PCM，服务端处理前，保留输入采样率/位宽/声道）、`*-asr-input.wav`（实际 ASR PCM 缓冲区，模型采样率、16 位单声道）及 `.json`（开始时间、两份时长、结束原因和转写文字）。过滤后的片段会拼接，不能直接按两份 WAV 的同一秒对齐。录音只覆盖本轮处理到结束的部分；提前结束后忽略的迟到音频不在其中。断开/异常时尽量保存已有数据，此时 ASR 缓冲区可能未 flush、未解码，JSON 会标明结束原因。
+
+每轮原始音频最多 30 秒；目录已有 100 组 received WAV 后停止新增并输出日志，不自动删除。录音含真实对话，仅在需要排查时启用。保存失败只记录错误，不改变识别结果。
+
+上下文暂存声纹模式：`SPEAKER_CONTEXT_SECONDS` 默认0；设为2时启用2秒上下文，`SPEAKER_WINDOW_SECONDS` 表示输出步长。短句使用独立 `SPEAKER_SHORT_THRESHOLD`。参数和延迟边界见 [EARLY_STOP.md 的上下文暂存模式](./EARLY_STOP.md#可选上下文暂存模式)。

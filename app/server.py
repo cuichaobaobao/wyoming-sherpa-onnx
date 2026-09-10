@@ -11,7 +11,9 @@ import numpy as np
 from .asr_engine import AudioFormat, Qwen3AsrEngine
 from .config import AppConfig
 from .denoise import GtcrnEnhancer
+from .debug_audio import AudioCapture
 from .early_stop import SpeakerEndpoint, StreamingVad
+from .speaker_context import ContextSpeakerEndpoint
 from .protocol import read_message, write_message
 from .speaker_gate import SpeakerGate
 
@@ -41,10 +43,12 @@ class SessionState:
     gate_pending_start_idx: int
     gate_segments: list["GateSegment"]
     gate_active: bool
-    endpoint: SpeakerEndpoint | None = None
+    endpoint: SpeakerEndpoint | ContextSpeakerEndpoint | None = None
     denoiser: GtcrnEnhancer | None = None
     finished: bool = False
     stop_notified: bool = False
+    capture: AudioCapture | None = None
+    stop_reason: str = "audio-stop"
 
 
 @dataclass(slots=True)
@@ -119,12 +123,15 @@ class WyomingAsrServer:
                 elif msg.msg_type == "transcribe":
                     state.transcribe_opts = data
                 elif msg.msg_type == "audio-start":
+                    await self._save_capture(state, "replaced-audio-start")
                     state.stream = self.engine.create_stream()
                     state.audio_format = AudioFormat(
                         rate=int(data.get("rate", self.cfg.sample_rate)),
                         width=int(data.get("width", 2)),
                         channels=int(data.get("channels", 1)),
                     )
+                    state.capture = AudioCapture.from_environment(state.audio_format, self.cfg.sample_rate)
+                    state.stop_reason = "audio-stop"
                     state.chunk_count = 0
                     state.total_bytes = 0
                     state.over_limit = False
@@ -151,7 +158,8 @@ class WyomingAsrServer:
                     if (self.cfg.speaker_early_stop and
                             state.transcribe_opts.get("speaker_early_stop") is True):
                         vad = await self._model_call(lambda: StreamingVad(self.cfg))
-                        state.endpoint = SpeakerEndpoint(
+                        endpoint_type = ContextSpeakerEndpoint if self.cfg.speaker_context_seconds > 0 else SpeakerEndpoint
+                        state.endpoint = endpoint_type(
                             self.cfg, self.speaker_gate, vad,
                             lambda waveform: self._feed_selected(state, waveform),
                         )
@@ -165,6 +173,8 @@ class WyomingAsrServer:
                 elif msg.msg_type == "audio-chunk":
                     if (msg.payload and not state.finished and state.stream is not None
                             and state.audio_format is not None):
+                        if state.capture is not None:
+                            state.capture.receive(msg.payload)
                         bytes_per_sample = state.audio_format.width * state.audio_format.channels
                         total_bytes = state.total_bytes + len(msg.payload)
                         audio_duration = total_bytes / (bytes_per_sample * state.audio_format.rate)
@@ -215,6 +225,7 @@ class WyomingAsrServer:
         except Exception as exc:  # noqa: BLE001
             LOGGER.exception("Client session error: %s", exc)
         finally:
+            await self._save_capture(state, "disconnect-or-error")
             try:
                 writer.close()
             except Exception:
@@ -261,6 +272,7 @@ class WyomingAsrServer:
         if state.stop_notified:
             return
         state.stop_notified = True
+        state.stop_reason = reason
         fmt = state.audio_format
         timestamp = 0 if fmt is None else round(
             1000 * state.total_bytes / (fmt.rate * fmt.width * fmt.channels)
@@ -290,6 +302,7 @@ class WyomingAsrServer:
             if state.endpoint is not None and state.endpoint.stopped:
                 await self._notify_stop(writer, state, "speaker-rejected")
             text = await self._model_call(lambda: self.engine.finish_stream(state.stream))
+        await self._save_capture(state, "audio-limit" if state.over_limit else state.stop_reason, text)
         state.stream = None
         state.denoiser = None
         state.endpoint = None
@@ -301,6 +314,14 @@ class WyomingAsrServer:
         LOGGER.info("[%s] Recognition completed: finish=%.3fs accepted=%.2fs text=%r",
                     peer, time.monotonic() - start_time,
                     state.accepted_samples / self.cfg.sample_rate, text)
+
+    async def _save_capture(self, state, reason, text=""):
+        capture = state.capture
+        if capture is None:
+            return
+        state.capture = None
+        pcm = bytes(getattr(state.stream, "pcm_buffer", b""))
+        await asyncio.to_thread(capture.save, pcm, reason, text)
 
     def _get_peername(self, writer) -> str:
         """获取客户端地址，安全处理异常。"""

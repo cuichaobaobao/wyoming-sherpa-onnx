@@ -92,3 +92,33 @@ PYTHONPATH=. python3 -B -m unittest discover -s tests -p 'test_*.py' -v
 - [HA ESPHome 事件转发](https://github.com/home-assistant/core/blob/2026.9.0/homeassistant/components/esphome/assist_satellite.py#L343)
 - [ESPHome 2026.8.0 收到结束事件](https://github.com/esphome/esphome/blob/2026.8.0/esphome/components/voice_assistant/voice_assistant.cpp#L979)
 - [ESPHome 停止本轮音频源](https://github.com/esphome/esphome/blob/2026.8.0/esphome/components/voice_assistant/voice_assistant.cpp#L406)
+
+## 可选上下文暂存模式
+
+设置 `SPEAKER_CONTEXT_SECONDS=2.0` 后，协商新协议的请求改用 ContextSpeakerEndpoint；默认 0 保留原固定窗口策略。此模式中 `SPEAKER_WINDOW_SECONDS` 是不重叠输出步长，本机设为 0.4 秒。声纹参考最近及后续的局部 2 秒上下文，每个输出片段必须等其上下文到齐才能判断：中间片段通常需要约 0.8 秒后续音频，起始片段等首个 2 秒。VAD 段结束或 audio-stop 会立即处理剩余已收到的数据，不继续等新录音。长 VAD 段首尾使用首尾完整上下文，不跨静音拼接上下文。服务总输入仍受 30 秒上限约束。
+
+本机试用参数：高分 0.63、低分 0.60，连续低分按每段新决定的 0.4 秒样本累计到1.6秒；绝不重复计算重叠的2秒窗口。高分保留；临界分只暂存一段，仅当前后紧邻输出片段均为本轮说话人的高分时补回。开头、结尾、连续临界段和跨VAD段不补回。临界/无效清零累计，低分丢弃并累计。不会把整个高分上下文都送给ASR，只发送该次对应的输出片段。连续拒绝后结束本轮并使用原 voice-stopped 通知流程；可选末尾复核只调整末尾附近。正常HA结束无需等声纹拒绝。
+
+不足2秒的完整VAD段在段结束时以实际长度评分；通过独立 `SPEAKER_SHORT_THRESHOLD`（本机0.40）则保留，未通过不累计结束；不足0.4秒或无效向量丢弃。短段阈值仍可能误放行，不代表短命令准确率已验证。长窗试用阈值来自有限样本，未证明对所有声音可靠。较长上下文与缓冲可能延迟声纹结束，交接附近仍可能误删/误放行，不是说话人分离。
+
+Context speaker hop/short region 日志输出具体分数和保留策略，录音仍由 DEBUG_AUDIO_DIR 控制。
+
+
+## 可选末尾边界复核
+
+`SPEAKER_BOUNDARY_REFINE=true`（CLI `--speaker-boundary-refine`，默认关闭）仅在上下文模式生效。
+实时的2秒声纹判断、0.4秒步长和1.6秒连续拒绝条件不变。保留区间暂存在当前VAD段的内存中，
+在VAD段结束或会话结束时、送入ASR前复核最后一个保留区间的末尾。复核不需要继续接收录音；
+提前拒绝路径仍先发送voice-stopped，再进行会话结束复核和ASR。正常VAD分段时会有复核计算开销。
+
+仅当最后一个连续保留区间至少达到上下文长度、且后面已有被拒绝或不确定片段时才尝试复核。
+在原末尾前后最多各0.8秒范围内，用完整的0.8秒窗口、0.1秒步长和独立固定阈值0.60定位局部变化。
+出现高分后连续两个低分窗口时，采用第一个低分窗口的中心为新末尾。相邻窗口重叠，连续两次仅为
+抑制单次波动，并非独立置信度证据。无明确变化、无效分数、上下文不足时保留原决定。
+可以少量补回句尾，也可以撤回已选中的背景开头；不填补中间拒绝区间，不跨VAD段复核，短段流程不变。
+调试asr-input.wav记录复核后真正输入，日志Context speaker boundary记录相对当前VAD段的前后末尾。
+
+这些参数是试用值，不代表精确声源边界或通用准确率保证。复核可能仍误删或漏入，同时说话时不具备
+目标说话人提取/分离能力。缓冲只在内存中，服务仍限制30秒输入，不增加落盘文件种类。
+
+上下文模式已恢复单段临界保护，日志 `Context speaker borderline restored` 标明补回区间。该规则不补回中间低分或无效片段，不改变连续拒绝计数；末尾边界复核仍作为独立步骤。

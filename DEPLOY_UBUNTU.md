@@ -1,4 +1,4 @@
-# Ubuntu Docker + HA 部署（待实机验证）
+# Ubuntu Docker + HA 部署
 
 使用本 Fork 的 `main` 分支。上游原版不包含本次改动；HA 自定义集成另行分发。
 当前 Docker/代码未启用 CUDA，ASR 使用默认 CPU，声纹/降噪显式使用 CPU。
@@ -14,17 +14,11 @@ cd wyoming-sherpa-onnx
 docker compose version
 ```
 
-**先确认数据目录再启动。** 基础 Compose 保留上游 `${HOME}/data/models` 和
-`${HOME}/data/speaker_refs` 的宿主机路径；以 root 启动时为 `/root/data/...`。
-如果你的业务数据必须跟随仓库目录，请先将两条挂载分别改为
-`./data/models:/app/data/models:rw`、`./data/speaker_refs:/data/speaker_refs:rw`，
-并把下文创建目录、下载模型及放置录音的路径相应改到项目内的 `data/`。
-不要把“源码在 /data”误认为“数据卷也自动在 /data”。
-
-下文仍按原 Compose 的 `${HOME}/data` 路径举例：
+部署只使用 `docker-compose.yml`，数据均位于项目内 `data/`。
+当前文件包含本机参数，迁移主机时应调整端口绑定的 `192.168.50.20`。
 
 ```sh
-mkdir -p "$HOME/data/models/vad" "$HOME/data/speaker_refs/speaker1"
+mkdir -p data/models/vad data/speaker_refs/lichao
 ```
 
 ## 2. Ubuntu：准备 VAD 和注册录音
@@ -34,7 +28,7 @@ VAD 不自动下载。执行下面命令下载到容器映射的模型目录：
 ```sh
 curl -fL --retry 3 \
   https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx \
-  -o "$HOME/data/models/vad/silero_vad.onnx"
+  -o "data/models/vad/silero_vad.onnx"
 ```
 
 来源：[sherpa-onnx 官方下载说明](https://github.com/k2-fsa/sherpa-onnx/blob/master/wasm/vad/assets/README.md)。
@@ -42,8 +36,8 @@ curl -fL --retry 3 \
 准备几段只有你本人清楚说话的录音，保存为真正的 PCM WAV（建议 16 kHz、16-bit、单声道），放到：
 
 ```text
-~/data/speaker_refs/speaker1/01.wav
-~/data/speaker_refs/speaker1/02.wav
+data/speaker_refs/lichao/01.wav
+data/speaker_refs/lichao/02.wav
 ```
 
 不能把 MP3/M4A 直接改扩展名。录音必须放在说话人子目录；不能直接放 `speaker_refs/` 根目录。
@@ -54,16 +48,18 @@ curl -fL --retry 3 \
 
 ```sh
 # 在你实际克隆的 wyoming-sherpa-onnx 目录执行
-docker compose -f docker-compose.yml -f compose.early-stop.yml config
-docker compose -f docker-compose.yml -f compose.early-stop.yml up -d --build
-docker compose -f docker-compose.yml -f compose.early-stop.yml logs -f --tail=100
+docker compose config
+docker compose up -d --build
+docker compose logs -f --tail=100
 ```
 
-首次构建需要下载 Python 依赖；启动后自动下载缺少的 Qwen3-ASR、声纹和 GTCRN 模型，
+当前声纹配置通过 `SPEAKER_MODEL_FILE` 指定文件，须先准备
+`data/models/speaker/3dspeaker_speech_eres2netv2_sv_zh-cn_16k-common.onnx`。本机已经具备该文件。
+首次构建需要下载 Python 依赖；启动后自动下载缺少的 Qwen3-ASR 模型。GTCRN 当前关闭，
 需要 Ubuntu 能访问相关下载站。看到 `Wyoming server listening` 才表示服务开始监听。
 日志若反复报错退出，不要继续配置 HA，先处理具体报错。
 
-模型保存在 `~/data/models/`，注册音频在 `~/data/speaker_refs/`。
+模型保存在 `data/models/`，注册音频在 `data/speaker_refs/`。
 HA 需要能通过局域网访问 Ubuntu 的 TCP 10300；如有防火墙，仅允许所需局域网来源访问。
 不需要公网端口映射。修改代码后使用相同 `up -d --build` 命令重新构建。
 
@@ -99,8 +95,8 @@ HA 首次加载会按 manifest 解析/安装 `wyoming==1.10.0` 依赖。
 先停止本轮输入、进入等待状态，之后 HA 收到之前有效音频的识别文字。
 有服务器日志不等于实机已停麦；需要同时查看 HA 流水线与设备行为。
 
-默认 0.8 秒评分窗口、1.6 秒低分人声阈值不代表精确的实际停麦延迟，仍受模型速度、
-VAD 起止确认、网络和队列影响。真实声纹准确率尚未验证，需据实际录音调参。
+当前 2 秒评分上下文、0.4 秒步长、1.6 秒连续低分人声阈值不代表精确的实际停麦延迟，仍受模型速度、
+VAD 起止确认、网络和队列影响。声纹效果需结合实际录音判断。
 
 ## 停止和回退
 
@@ -108,10 +104,10 @@ Ubuntu 停止服务（保留模型及注册录音）：
 
 ```sh
 # 在你实际克隆的 wyoming-sherpa-onnx 目录执行
-docker compose -f docker-compose.yml -f compose.early-stop.yml down
+docker compose down
 ```
 
 HA 端将语音助手切回原 STT，再移除自定义集成；如需彻底移除，删除本集成目录并重启 HA。
 
-本部署包仅完成工作区源码和模拟测试，未实际构建镜像、加载模型或连接 HA / Voice PE。
+本机已构建并运行容器，使用 sherpa-onnx 1.13.7；这不代表所有声纹场景均能准确处理。
 详细处理规则见 [EARLY_STOP.md](EARLY_STOP.md)。
